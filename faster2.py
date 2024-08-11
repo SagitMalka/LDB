@@ -1,21 +1,14 @@
 import argparse
 import time
-import os
 import torch
 import numpy as np
 from numpy import random
 from torch import nn
 from torch import optim
-from torch.nn import functional as F
 import torchvision
-from torchvision import datasets, transforms
-from torch.utils.data import DataLoader
-import wandb
+from torchvision import  transforms
 from datetime import datetime
-#import torchvision.models as models
-from datetime import timedelta
 from net_models import *
-import sys
 
 
 
@@ -68,23 +61,6 @@ def build_model(args,device):
     net = net.to(device)
     return net
 
-# def build_model(args, device):
-#     print('==> Building model..')
-
-#     no_of_class = {
-#         'cifar10': 10,
-#         'cifar100': 100,
-#         'mnist': 10,
-#         'svhn' : 10,
-#         'imagenet' : 1000
-
-#     }[args.dataset]
-#     net = models.__dict__[args.model]()
-#     num_features = net.fc.in_features
-#     net.fc = torch.nn.Linear(num_features, no_of_class)
-#     net = net.to(device)
-#     return net
-
 
 def build_dataset(args):
     if args.dataset == 'cifar10' or args.dataset == 'cifar100':
@@ -111,14 +87,9 @@ def build_dataset(args):
             transforms.Normalize(TRAIN_MEAN, TRAIN_STD),
         ])
 
-        trainset                    = dataset(root='./data', train=True, download=True, transform=transform_train)
-        trainloader                 = torch.utils.data.DataLoader(trainset, batch_size=args.batch, shuffle=True, num_workers=1)
-        trainloader_double_batch    = torch.utils.data.DataLoader(trainset, batch_size=args.batch*2, shuffle=True, num_workers=1)
-
-        testset = dataset(
-            root='./data', train=False, download=True, transform=transform_test)
-        testloader = torch.utils.data.DataLoader(
-            testset, batch_size=args.batch, shuffle=False, num_workers=1)
+        trainset = dataset(root='./data', train=True, download=True, transform=transform_train)       
+        testset  = dataset(root='./data', train=False, download=True, transform=transform_test)
+        
 
     if args.dataset=='svhn':
         print('==> Preparing data..')
@@ -133,22 +104,14 @@ def build_dataset(args):
         ])
 
         trainset = torchvision.datasets.SVHN(root='./data', split='train', download=True, transform=transform_train)
-        trainloader = torch.utils.data.DataLoader(trainset, batch_size=args.batch, shuffle=True, num_workers=1)
+        testset = torchvision.datasets.SVHN(root='./data', split='test', download=True, transform=transform_test)
 
-        testset = torchvision.datasets.SVHN(
-            root='./data', split='test', download=True, transform=transform_test)
-        testloader = torch.utils.data.DataLoader(
-            testset, batch_size=args.batch, shuffle=False, num_workers=1)
+        
+    trainloader                 = torch.utils.data.DataLoader(trainset, batch_size=args.batch, shuffle=True, num_workers=32)
+    trainloader_double_batch    = torch.utils.data.DataLoader(trainset, batch_size=int(args.batch*args.batch_inc), shuffle=True, num_workers=32)
+    testloader = torch.utils.data.DataLoader(testset, batch_size=args.batch, shuffle=False, num_workers=18)
 
     return trainloader, testloader,trainloader_double_batch
-
-
-
-
-# if 'bn' not in name:# and 'weight' in name:
-# ans = (np.random.uniform() > gp) * 1
-# drop[i]= ans
-# drop[index+1] = ans #the bias
 
 def get_lr(optimizer):
     for param_group in optimizer.param_groups:
@@ -158,12 +121,16 @@ def set_lr(optimizer,lr):
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr 
 
-
-# for g in optim.param_groups:
-#     g['lr'] = 0.001
-
 def set_grad(p,Val):
     p.requires_grad=Val
+
+def get_new_lr(org_lr,args):
+    new_lr = org_lr
+    if args.lr_policy == 'double':
+        new_lr = org_lr*2
+    if args.lr_policy == 'relative':
+        new_lr = org_lr/(1-args.droprate+0.000001)
+    return new_lr
 
 def train(epoch, model, device, train_loader_single_batch, optimizer, criterion, args, params,train_loader_double_batch):
     model.train()
@@ -175,13 +142,13 @@ def train(epoch, model, device, train_loader_single_batch, optimizer, criterion,
 
     train_loader=train_loader_single_batch
     if params is not None:
-        if args.ldb and epoch % args.skip == 0 and epoch>0:
+        if  epoch % args.skip == 0 and epoch>0:
             print("setting droplayer")
             original_lr = get_lr(optimizer)
-            set_lr(optimizer,original_lr/(1-args.droprate+0.000001))                   
-            train_loader=train_loader_double_batch
-        else:  
-            [set_grad(p,True) for p in params]    
+            new_lr = get_new_lr(original_lr,args)
+            set_lr(optimizer,new_lr)                   
+            train_loader=train_loader_double_batch 
+        [set_grad(p,True) for p in params]    
 
     for _, (data, target) in enumerate(train_loader, start=0):  
         data = data.to(device)
@@ -192,7 +159,7 @@ def train(epoch, model, device, train_loader_single_batch, optimizer, criterion,
         if params is not None and args.ldb and epoch % args.skip == 0 and epoch>0:
             [set_grad(p,False) if np.random.uniform() < args.droprate else set_grad(p,True) for p in params]
 
-        output = model(data) # for not imagenet
+        output = model(data) 
         loss = criterion(output, target)
         train_loss += loss.item()
         _, predictions = torch.max(output.data, 1)
@@ -208,11 +175,6 @@ def train(epoch, model, device, train_loader_single_batch, optimizer, criterion,
         if args.ldb and epoch % args.skip == 0 and epoch>0:
            set_lr(optimizer,original_lr)
         print('LDB:   Epoch [{}], Train Loss: {}, Train Accuracy: {}, Epoch Time {}'.format(epoch, train_loss / train_total, acc,end_time), end='') 
-        wandb.log({'LDB Train Loss': train_loss / train_total, 'LDB Train Accuracy': acc, 'Epoch': epoch})
-    else:
-        print('Standard: Epoch [{}], Train Loss: {}, Train Accuracy: {}, Epoch Time {}'.format(epoch, train_loss / train_total, acc,end_time), end='') 
-        wandb.log({'Standard Train Loss': train_loss / train_total, 'Standard Train Accuracy': acc, 'Epoch': epoch})
-  
     return end_time
 
 
@@ -231,19 +193,20 @@ def test(epoch,model, device, test_loader, criterion):
             test_correct += int(sum(predictions == target))
     acc = round((test_correct / test_total) * 100, 2)
     print(' Test_loss: {}, Test_accuracy: {}'.format(test_loss / test_total, acc))
-    wandb.log({'Test Loss': test_loss / test_total, 'Test Accuracy': acc,'Epoch':epoch})
     return acc
     
 def get_parser():
     parser = argparse.ArgumentParser(description='PyTorch CIFAR10 Training')
-    parser.add_argument('--model', default='ResNet18', type=str, help='model')
-    parser.add_argument('--dataset', type=str, default="cifar10", help='dataset', choices=['cifar10', 'cifar100', 'mnist', 'svhn','imagenet'])
+    parser.add_argument('--model', default='EfficientNetB0', type=str, help='model')
+    parser.add_argument('--dataset', type=str, default="cifar100", help='dataset', choices=['cifar10', 'cifar100', 'mnist', 'svhn','imagenet'])
     parser.add_argument('--lr', default=0.1, type=float, help='learning rate')
     parser.add_argument('--lr_scheduler', default="cosine", type=str, help='scheduler', choices=['linear', 'cosine'] )
+    parser.add_argument('--lr_policy', default="double", type=str, help='polisy', choices=['double', 'fix', 'relative'] )
     parser.add_argument('--lr_gamma', default=0.2, type=float, help='learning rate gamma')
     parser.add_argument('--momentum', default=0.9, type=float, help='momentum term')
     parser.add_argument('--droprate', default=0.5, type=float, help='layer drop percentage')
     parser.add_argument('--batch', default=128, type=int, help='batch size')
+    parser.add_argument('--batch_inc', default=1, type=float, help='batch inc')
     parser.add_argument('--skip', default=2, type=int, help='skip index')
     parser.add_argument('--epochs', default=202, type=int, help='number of epochs')
     parser.add_argument('--optim', type=str, default="sgd", help='optimizer', choices=['sgd', 'dlrd', 'lrd', 'adam'])
@@ -263,6 +226,8 @@ def main():
     args            = parser.parse_args()
     args.milestones = [int(item) for item in args.milestones.split(',')]
     args.ldb        = not args.no_ldb # more easy, ldb positive as default
+    if (args.no_ldb):
+        args.droprate = 0.0
     args.expr_name  = get_expr_name(args.ldb,model=args.model, optimizer=args.optim, lr=args.lr,
                                      momentum=args.momentum,droprate = args.droprate, dataset=args.dataset)
     
@@ -275,26 +240,17 @@ def main():
 
 
     layerdropback_net           = build_model(args, device)
-    if sys.platform.lower() == 'linux':
-        print("using two gpus")
+    if torch.cuda.is_available() and torch.cuda.device_count() > 1:
         layerdropback_net           = nn.DataParallel(layerdropback_net)
 
     layerdropback_criterion     = nn.CrossEntropyLoss()
     layerdropback_optimizer     = optim.SGD(layerdropback_net.parameters(), args.lr, momentum=args.momentum,weight_decay=1e-4,  nesterov=True) #weight_decay=1e-4, nesterov=True) #weight_decay=5e-4) #
-    #layerdropback_lr_scheduler  = optim.lr_scheduler.CosineAnnealingLR(layerdropback_optimizer, T_max=200)
-    #layerdropback_lr_scheduler  = optim.lr_scheduler.MultiStepLR(layerdropback_optimizer, milestones=args.milestones, gamma=args.lr_gamma)
     if args.lr_scheduler == 'cosine':
         layerdropback_lr_scheduler  = optim.lr_scheduler.CosineAnnealingLR(layerdropback_optimizer, T_max=200)
     if args.lr_scheduler == 'linear':
         milestones             = [round(args.epochs * 0.3), round(args.epochs * 0.6), round(args.epochs * 0.85)]
         layerdropback_lr_scheduler  = optim.lr_scheduler.MultiStepLR(layerdropback_optimizer, milestones=milestones, gamma=args.lr_gamma)
     
-    
-
-    wandb.login(key="fa6efdf50150c810eeab8396b447bafbc151ded4", relogin=True)
-    wandb.init (entity='gil', project=args.project, name=args.expr_name, config=vars(args),mode='offline') #disabled
-    #wandb.watch(layerdropback_net, log='all')
-    #wandb.watch(Standard_net, log='all')
 
     layerdropback_total_time = 0  
     layerdropback_max_acc    = 0
@@ -311,22 +267,25 @@ def main():
             
     for epoch in range(args.epochs):
         ### training
+        DATE_FORMAT = '%A_%d_%B_%Y_%Hh_%Mm_%Ss'
+        #time of we run the script
+        TIME_NOW = datetime.now().strftime(DATE_FORMAT)
+        print('start train rpoch', TIME_NOW)
         end_time=train(epoch, layerdropback_net, device, trainloader_single_batch, layerdropback_optimizer, layerdropback_criterion, args,param_list,trainloader_double_batch)
+        TIME_NOW = datetime.now().strftime(DATE_FORMAT)
+        print('end train rpoch',TIME_NOW)
         acc=test(epoch, layerdropback_net, device, testloader, layerdropback_criterion)
         if acc>layerdropback_max_acc:
             layerdropback_max_acc=acc        
         layerdropback_total_time += end_time
         layerdropback_lr_scheduler.step()
        
-        if args.ldb==True:            
-            print('LDB Time: {}, LDB Max Acc {}'.format(layerdropback_total_time,layerdropback_max_acc))
-            wandb.log({'LDB Total Time':layerdropback_total_time,'LDB Max Acc':layerdropback_max_acc,'Epoch':epoch})
-        else:
-            print('Standard Time: {}, Standard Max Acc {}'.format(layerdropback_total_time,layerdropback_max_acc))
-            wandb.log({'Standard Total Time':layerdropback_total_time,'Standard Max Acc':layerdropback_max_acc,'Epoch':epoch})
-
+               
+        print('LDB Time: {}, LDB Max Acc {}'.format(layerdropback_total_time,layerdropback_max_acc))
+       
     print('Finished Training')
-    wandb.finish()
+    print(get_expr_name(args.ldb,model=args.model, optimizer=args.optim, lr=args.lr,
+                                     momentum=args.momentum,droprate = args.droprate, dataset=args.dataset))
 
 if __name__ == '__main__':
     main()

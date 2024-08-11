@@ -19,7 +19,7 @@ import sys
 sys.path.append("ViT-pytorch")
 sys.path.append("ViT-pytorch/models")
 from models.modeling import VisionTransformer, CONFIGS
-
+from transformers import AutoImageProcessor, AutoModelForImageClassification ,ConvNextForImageClassification
 
 def get_expr_name(ldb=True, model='resnet', optimizer='sgd', lr=0.1,momentum=0, droprate=0, dataset='cifar10'):
     name = {
@@ -54,8 +54,12 @@ def build_model(args,device):
     'ViT-H_16' : 'pretrain/ViT-H_16.npz'
         }
 
-    net = VisionTransformer(config, (args.image_resolution,args.image_resolution), zero_head=True, num_classes=no_of_class)
-    net.load_from(np.load(pretrain_weights[args.model]))
+    if args.model in pretrain_weights.keys():
+        net = VisionTransformer(config, (args.image_resolution,args.image_resolution), zero_head=True, num_classes=no_of_class)
+        net.load_from(np.load(pretrain_weights[args.model]))
+    if args.model == "SwinTransformer":
+        net = AutoModelForImageClassification.from_pretrained("microsoft/swinv2-base-patch4-window12-192-22k")
+        net.classifier = nn.Linear(net.classifier.in_features,no_of_class)
     net = net.to(device)
     return net
 
@@ -105,13 +109,13 @@ def build_dataset(args):
         ])
 
         trainset                    = dataset(root='./data', train=True, download=True, transform=transform_train)
-        trainloader                 = torch.utils.data.DataLoader(trainset, batch_size=args.batch, shuffle=True, num_workers=1)
-        trainloader_double_batch    = torch.utils.data.DataLoader(trainset, batch_size=args.batch*2, shuffle=True, num_workers=1)
+        trainloader                 = torch.utils.data.DataLoader(trainset, batch_size=args.batch, shuffle=True, num_workers=32)
+        trainloader_double_batch    = torch.utils.data.DataLoader(trainset, batch_size=args.batch*2, shuffle=True, num_workers=32)
 
         testset = dataset(
             root='./data', train=False, download=True, transform=transform_test)
         testloader = torch.utils.data.DataLoader(
-            testset, batch_size=args.batch, shuffle=False, num_workers=1)
+            testset, batch_size=args.batch, shuffle=False, num_workers=32)
 
     if args.dataset=='svhn':
         print('==> Preparing data..')
@@ -132,6 +136,33 @@ def build_dataset(args):
             root='./data', split='test', download=True, transform=transform_test)
         testloader = torch.utils.data.DataLoader(
             testset, batch_size=args.batch, shuffle=False, num_workers=1)
+        
+    elif args.dataset == 'imagenet':
+        path = '/home/evgenyn/project/imagenet/'
+        traindir = os.path.join(path, 'train')
+        valdir = os.path.join(path, 'val')
+        normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                        std=[0.229, 0.224, 0.225])
+
+        train_dataset = torchvision.datasets.ImageFolder(traindir, transforms.Compose([
+                                                                    transforms.Resize((args.image_resolution,args.image_resolution)),
+                                                                    transforms.RandomHorizontalFlip(),
+                                                                    transforms.RandomRotation(15),
+                                                                    transforms.ToTensor(),
+                                                                    normalize]))
+        #train_sampler = torch.utils.data.distributed.DistributedSampler(dataset=train_dataset, shuffle=True)
+        train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=args.batch, num_workers=32, pin_memory=True,shuffle=True)
+        trainloader_double_batch = torch.utils.data.DataLoader(train_dataset, batch_size=args.batch*2, num_workers=32, pin_memory=True,shuffle=True)
+
+        val_dateset = torchvision.datasets.ImageFolder(valdir, transforms.Compose([transforms.Resize((args.image_resolution,args.image_resolution)),
+                                                        transforms.ToTensor(),
+                                                        normalize]))
+        #val_sampler =torch.utils.data.distributed.DistributedSampler(dataset=val_dateset, shuffle=False)
+        val_loader = torch.utils.data.DataLoader(val_dateset,
+                                                    batch_size=args.batch, shuffle=True,
+                                                    num_workers=32, pin_memory=False)
+        
+        return train_loader , val_loader,trainloader_double_batch
 
     return trainloader, testloader,trainloader_double_batch
 
@@ -184,8 +215,11 @@ def train(epoch, model, device, train_loader_single_batch, optimizer, criterion,
         # drop layers
         if params is not None and args.ldb and epoch % args.skip == 0 and epoch>0:
             [set_grad(p,False) if np.random.uniform() < args.droprate else set_grad(p,True) for p in params]
-
-        output , kkk = model(data) # for not imagenet
+        output = model(data) # for not imagenet
+        if type(output) is tuple:
+            output = output[0]
+        else:
+            output = output.logits
         loss = criterion(output, target)
         train_loss += loss.item()
         _, predictions = torch.max(output.data, 1)
@@ -193,7 +227,8 @@ def train(epoch, model, device, train_loader_single_batch, optimizer, criterion,
         train_correct += int(sum(predictions == target))
         loss.backward()
         optimizer.step()
-            
+
+
     end_time=time.process_time() - start_time
     acc = round((train_correct / train_total) * 100, 2)
     
@@ -217,7 +252,11 @@ def test(epoch,model, device, test_loader, criterion):
     with torch.no_grad():
         for data, target in test_loader:
             data, target = data.to(device), target.to(device)
-            output , kkk = model(data)
+            output = model(data) 
+            if type(output) is tuple: #for ViT
+                output = output[0]
+            else:
+                output = output.logits # for hugging face models
             test_loss += criterion(output, target).item()
             scores, predictions = torch.max(output.data, 1)
             test_total += target.size(0)
