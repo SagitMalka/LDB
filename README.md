@@ -21,3 +21,13 @@ python main.py --model resnet50 --dataset cifar100
 
 ## Results
 Using LayerDropBack, we achieve an average speedup of 23.3% in model training from scratch and 16.93% in fine-tuning, with minimal impact on model accuracy. For more detailed performance metrics, see the results/ directory.
+
+## Citation
+'''
+@inproceedings{layerdropback2025,
+  title={LayerDropBack: Accelerating Deep Network Training by Forward-Consistent Stochastic Regularization},
+  author={},
+  booktitle={},
+  year={}
+}
+''' 
