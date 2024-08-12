@@ -6,6 +6,16 @@ LayerDropBack (LDB) introduces a novel approach to accelerate deep neural networ
 ## Installation
 
 ```bash
-git clone https://github.com/yourusername/layerdropback.git
-cd layerdropback
+git clone https://github.com/neiterman21/LDB.git
+cd LDB
 pip install -r requirements.txt
+```
+## Example
+Here is an example script showing how to train a ResNet50 model using LayerDropBack on the CIFAR-100 dataset.
+
+```
+python main.py --model resnet50 --dataset cifar100
+```
+
+## Results
+Using LayerDropBack, we achieve an average speedup of 23.3% in model training from scratch and 16.93% in fine-tuning, with minimal impact on model accuracy. For more detailed performance metrics, see the results/ directory.
