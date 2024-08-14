@@ -10,7 +10,6 @@ from torch.nn import functional as F
 import torchvision
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader
-import wandb
 from datetime import datetime
 #import torchvision.models as models
 from datetime import timedelta
@@ -62,24 +61,6 @@ def build_model(args,device):
         net.classifier = nn.Linear(net.classifier.in_features,no_of_class)
     net = net.to(device)
     return net
-
-# def build_model(args, device):
-#     print('==> Building model..')
-
-#     no_of_class = {
-#         'cifar10': 10,
-#         'cifar100': 100,
-#         'mnist': 10,
-#         'svhn' : 10,
-#         'imagenet' : 1000
-
-#     }[args.dataset]
-#     net = models.__dict__[args.model]()
-#     num_features = net.fc.in_features
-#     net.fc = torch.nn.Linear(num_features, no_of_class)
-#     net = net.to(device)
-#     return net
-
 
 def build_dataset(args):
     if args.dataset == 'cifar10' or args.dataset == 'cifar100':
@@ -138,7 +119,7 @@ def build_dataset(args):
             testset, batch_size=args.batch, shuffle=False, num_workers=1)
         
     elif args.dataset == 'imagenet':
-        path = '/home/evgenyn/project/imagenet/'
+        path = args.imagnet_path
         traindir = os.path.join(path, 'train')
         valdir = os.path.join(path, 'val')
         normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
@@ -150,14 +131,12 @@ def build_dataset(args):
                                                                     transforms.RandomRotation(15),
                                                                     transforms.ToTensor(),
                                                                     normalize]))
-        #train_sampler = torch.utils.data.distributed.DistributedSampler(dataset=train_dataset, shuffle=True)
         train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=args.batch, num_workers=32, pin_memory=True,shuffle=True)
         trainloader_double_batch = torch.utils.data.DataLoader(train_dataset, batch_size=args.batch*2, num_workers=32, pin_memory=True,shuffle=True)
 
         val_dateset = torchvision.datasets.ImageFolder(valdir, transforms.Compose([transforms.Resize((args.image_resolution,args.image_resolution)),
                                                         transforms.ToTensor(),
                                                         normalize]))
-        #val_sampler =torch.utils.data.distributed.DistributedSampler(dataset=val_dateset, shuffle=False)
         val_loader = torch.utils.data.DataLoader(val_dateset,
                                                     batch_size=args.batch, shuffle=True,
                                                     num_workers=32, pin_memory=False)
@@ -167,13 +146,6 @@ def build_dataset(args):
     return trainloader, testloader,trainloader_double_batch
 
 
-
-
-# if 'bn' not in name:# and 'weight' in name:
-# ans = (np.random.uniform() > gp) * 1
-# drop[i]= ans
-# drop[index+1] = ans #the bias
-
 def get_lr(optimizer):
     for param_group in optimizer.param_groups:
         return param_group['lr'] 
@@ -181,10 +153,6 @@ def get_lr(optimizer):
 def set_lr(optimizer,lr):
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr 
-
-
-# for g in optim.param_groups:
-#     g['lr'] = 0.001
 
 def set_grad(p,Val):
     p.requires_grad=Val
@@ -215,7 +183,7 @@ def train(epoch, model, device, train_loader_single_batch, optimizer, criterion,
         # drop layers
         if params is not None and args.ldb and epoch % args.skip == 0 and epoch>0:
             [set_grad(p,False) if np.random.uniform() < args.droprate else set_grad(p,True) for p in params]
-        output = model(data) # for not imagenet
+        output = model(data) 
         if type(output) is tuple:
             output = output[0]
         else:
@@ -236,11 +204,6 @@ def train(epoch, model, device, train_loader_single_batch, optimizer, criterion,
         if args.ldb and epoch % args.skip == 0 and epoch>0:
            set_lr(optimizer,original_lr)
         print('LDB:   Epoch [{}], Train Loss: {}, Train Accuracy: {}, Epoch Time {}'.format(epoch, train_loss / train_total, acc,end_time), end='') 
-        wandb.log({'LDB Train Loss': train_loss / train_total, 'LDB Train Accuracy': acc, 'Epoch': epoch})
-    else:
-        print('Standard: Epoch [{}], Train Loss: {}, Train Accuracy: {}, Epoch Time {}'.format(epoch, train_loss / train_total, acc,end_time), end='') 
-        wandb.log({'Standard Train Loss': train_loss / train_total, 'Standard Train Accuracy': acc, 'Epoch': epoch})
-  
     return end_time
 
 
@@ -263,13 +226,13 @@ def test(epoch,model, device, test_loader, criterion):
             test_correct += int(sum(predictions == target))
     acc = round((test_correct / test_total) * 100, 2)
     print(' Test_loss: {}, Test_accuracy: {}'.format(test_loss / test_total, acc))
-    wandb.log({'Test Loss': test_loss / test_total, 'Test Accuracy': acc,'Epoch':epoch})
     return acc
     
 def get_parser():
     parser = argparse.ArgumentParser(description='PyTorch CIFAR10 Training')
     parser.add_argument('--model', default='ResNet18', type=str, help='model')
     parser.add_argument('--dataset', type=str, default="cifar10", help='dataset', choices=['cifar10', 'cifar100', 'mnist', 'svhn','imagenet'])
+    parser.add_argument('--imagnet_path', default='data/' ,type=str, help='Path to imagenet if used') 
     parser.add_argument('--lr', default=0.1, type=float, help='learning rate')
     parser.add_argument('--lr_scheduler', default="linear", type=str, help='scheduler', choices=['linear', 'cosine'] )
     parser.add_argument('--lr_gamma', default=0.2, type=float, help='learning rate gamma')
@@ -282,8 +245,7 @@ def get_parser():
     parser.add_argument('--seed', default=2, type=int, help='seed')
     parser.add_argument("--no_ldb", action="store_true",help="do not use layerdropback") 
     parser.add_argument('--milestones', type=str,default="60,120,160,180",help="milestones for lr decay")
-    parser.add_argument('--project', default='dropbackfaster', type=str, help='project name') #test_dropback_params
-    parser.add_argument('--image_resolution', default=224, type=int, help='input image resolution to be resized to') #test_dropback_params
+    parser.add_argument('--image_resolution', default=224, type=int, help='input image resolution to be resized to') 
 
     return parser
       
@@ -322,12 +284,6 @@ def main():
         layerdropback_lr_scheduler  = optim.lr_scheduler.MultiStepLR(layerdropback_optimizer, milestones=milestones, gamma=args.lr_gamma)
     
     
-
-    wandb.login(key="fa6efdf50150c810eeab8396b447bafbc151ded4", relogin=True)
-    wandb.init (entity='gil', project=args.project, name=args.expr_name, config=vars(args),mode='offline') #disabled
-    #wandb.watch(layerdropback_net, log='all')
-    #wandb.watch(Standard_net, log='all')
-
     layerdropback_total_time = 0  
     layerdropback_max_acc    = 0
     
@@ -350,15 +306,10 @@ def main():
         layerdropback_total_time += end_time
         layerdropback_lr_scheduler.step()
        
-        if args.ldb==True:            
-            print('LDB Time: {}, LDB Max Acc {}'.format(layerdropback_total_time,layerdropback_max_acc))
-            wandb.log({'LDB Total Time':layerdropback_total_time,'LDB Max Acc':layerdropback_max_acc,'Epoch':epoch})
-        else:
-            print('Standard Time: {}, Standard Max Acc {}'.format(layerdropback_total_time,layerdropback_max_acc))
-            wandb.log({'Standard Total Time':layerdropback_total_time,'Standard Max Acc':layerdropback_max_acc,'Epoch':epoch})
-
+               
+        print('LDB Time: {}, LDB Max Acc {}'.format(layerdropback_total_time,layerdropback_max_acc))
+        
     print('Finished Training')
-    wandb.finish()
 
 if __name__ == '__main__':
     main()
